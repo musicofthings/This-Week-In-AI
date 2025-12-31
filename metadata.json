@@ -1,0 +1,5 @@
+{
+  "name": "This Week in AI - Cloudflare Pages Version",
+  "description": "A minimalist news site that automatically pulls the latest AI news using Gemini Search Grounding, styled with a clean Substack-inspired aesthetic.",
+  "requestFramePermissions": []
+}
