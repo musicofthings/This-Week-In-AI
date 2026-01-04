@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { NewsContent, NewsArticle, GroundingSource } from "../types";
 
@@ -205,15 +206,9 @@ export const fetchLatestAINews = async (): Promise<NewsContent> => {
   }
 
   // 2. Client-Side Fallback
-  // Safely retrieve API Key from injected process.env or Vite env
-  // @ts-ignore
-  const apiKey = (typeof process !== 'undefined' && process.env?.API_KEY) || import.meta.env?.VITE_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("API Key not found. Please set API_KEY in your environment variables.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  // Fix: Use process.env.API_KEY directly as per guidelines. 
+  // Vite replaces process.env.API_KEY with the actual key string at build time.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
   const prompt = `Current Date: ${dateStr}. 

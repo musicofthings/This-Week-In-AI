@@ -2,16 +2,20 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
-  // Use '.' to refer to the current directory
-  const env = loadEnv(mode, '.', '');
+  // Load env file based on `mode` in the current working directory.
+  // Fix: Cast process to any to avoid "Property 'cwd' does not exist on type 'Process'" error.
+  const env = loadEnv(mode, (process as any).cwd(), '');
   
-  // Prioritize environment variables, falling back to empty string to prevent crashes
-  const apiKey = env.API_KEY || process.env.API_KEY || "";
+  // Cloudflare Pages / Vite Best Practice:
+  // Prefer VITE_API_KEY for client-side variables.
+  // Fallback to API_KEY if set in system environment (e.g. Cloudflare Dashboard).
+  const apiKey = env.VITE_API_KEY || env.API_KEY || process.env.API_KEY || "";
 
   return {
     plugins: [react()],
     define: {
-      // Inject the API key into the client bundle safely
+      // Inject the API key into the client bundle securely
+      // This allows 'process.env.API_KEY' to work in client code even if using VITE_ prefix
       'process.env.API_KEY': JSON.stringify(apiKey)
     },
     build: {
@@ -21,18 +25,12 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 3000,
-      // Optional: Proxy /api to local wrangler dev if you run it
       proxy: {
         '/api': {
           target: 'http://127.0.0.1:8788',
           changeOrigin: true,
           secure: false,
-          ws: true,
-          configure: (proxy, _options) => {
-            proxy.on('error', (err, _req, _res) => {
-              console.log('Proxy error', err);
-            });
-          }
+          ws: true
         }
       }
     }
