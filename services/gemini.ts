@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { NewsContent, NewsArticle, GroundingSource } from "../types";
 
@@ -176,9 +177,6 @@ const extractJson = (text: string) => {
 };
 
 export const fetchLatestAINews = async (): Promise<NewsContent> => {
-  // Strategy: Try Serverless Backend first (Cloudflare). 
-  // If it fails (404/Network), Fallback to Client-Side (GitHub Pages / Local).
-
   let useClientFallback = false;
 
   // 1. Attempt Server Fetch
@@ -192,17 +190,20 @@ export const fetchLatestAINews = async (): Promise<NewsContent> => {
       }
       console.warn("Backend error:", data.error);
       
-      // CRITICAL FIX: If backend says 429/Quota, DO NOT retry on client.
-      // Both environments likely use the same API Project/Quota.
-      // Retrying locks the account longer.
-      const errMsg = (data.error || "").toLowerCase();
+      // Handle object error from backend
+      let errMsg = "";
+      if (typeof data.error === 'object') {
+        errMsg = JSON.stringify(data.error).toLowerCase();
+      } else {
+        errMsg = String(data.error).toLowerCase();
+      }
+
       if (errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("exhausted")) {
         throw new Error("Daily Briefing Capacity Reached. Please try again in 1 hour.");
       }
       
       useClientFallback = true;
     } else {
-      // If status is 429, Stop.
       if (response.status === 429) {
         throw new Error("Daily Briefing Capacity Reached. Please try again in 1 hour.");
       }
@@ -210,7 +211,6 @@ export const fetchLatestAINews = async (): Promise<NewsContent> => {
       useClientFallback = true;
     }
   } catch (error: any) {
-    // If the error was explicitly thrown above (Quota), rethrow it.
     if (error.message.includes("Capacity Reached")) {
       throw error;
     }
@@ -223,7 +223,6 @@ export const fetchLatestAINews = async (): Promise<NewsContent> => {
   }
 
   // 2. Client-Side Fallback
-  // Checks VITE_API_KEY first (Cloudflare Best Practice), then standard API_KEY
   // @ts-ignore
   const apiKey = import.meta.env?.VITE_API_KEY || (typeof process !== 'undefined' && process.env?.API_KEY);
 
@@ -289,8 +288,9 @@ export const fetchLatestAINews = async (): Promise<NewsContent> => {
 
   } catch (error: any) {
     console.error("Client Generation Error:", error);
-    // Improve Client Error Message
-    if (error.message.includes("429") || error.message.includes("quota")) {
+    // Handle SDK errors which might be objects or JSON strings
+    const msg = error.message || String(error);
+    if (msg.includes("429") || msg.includes("quota")) {
       throw new Error("Daily Briefing Capacity Reached. Please try again later.");
     }
     throw new Error(error.message);

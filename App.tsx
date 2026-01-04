@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchLatestAINews, HISTORICAL_REPORTS } from './services/gemini';
 import { NewsContent, NewsArticle, GroundingSource } from './types';
@@ -13,6 +14,7 @@ import ArticleOverlay from './components/ArticleOverlay';
 
 const STORAGE_KEY = 'ai_news_archive_v18'; 
 const SYNC_KEY = 'ai_news_last_sync_timestamp';
+const RETRY_KEY = 'ai_news_retry_until'; // New cool-down key
 const USER_KEY = 'ai_user_email';
 const SUB_KEY = 'ai_user_subscribed';
 
@@ -30,7 +32,6 @@ const App: React.FC = () => {
   const [userEmail, setUserEmail] = useState<string | null>(localStorage.getItem(USER_KEY));
   const [isSubscribed, setIsSubscribed] = useState<boolean>(localStorage.getItem(SUB_KEY) === 'true');
 
-  // FIX: Initialization lock to prevent double-firing in React StrictMode
   const initialized = useRef(false);
 
   const saveToCache = useCallback((newContent: NewsContent | null) => {
@@ -38,19 +39,18 @@ const App: React.FC = () => {
     const articleMap = new Map<string, NewsArticle>();
     const sourceMap = new Map<string, GroundingSource>();
 
-    // Step 1: Initialize with expanded Historical Reports (Guarantee variety)
+    // Step 1: Initialize with expanded Historical Reports
     HISTORICAL_REPORTS.forEach(a => {
       const key = a.title.trim().toLowerCase();
       articleMap.set(key, { ...a, category: a.category.toUpperCase() });
     });
 
-    // Step 2: Merge existing Archive from LocalStorage (Retain previous syncs)
+    // Step 2: Merge existing Archive
     if (cachedRaw) {
       try {
         const cached: NewsContent = JSON.parse(cachedRaw);
         cached.articles.forEach(a => {
           const key = a.title.trim().toLowerCase();
-          // Retain if unique or if new version has more content
           const existing = articleMap.get(key);
           if (!existing || a.content.length > existing.content.length) {
             articleMap.set(key, { ...a, category: a.category.toUpperCase() });
@@ -62,7 +62,7 @@ const App: React.FC = () => {
       }
     }
 
-    // Step 3: Merge Fresh Intelligence from latest fetch
+    // Step 3: Merge Fresh Intelligence
     if (newContent) {
       newContent.articles.forEach(a => {
         const key = a.title.trim().toLowerCase();
@@ -75,15 +75,12 @@ const App: React.FC = () => {
     }
 
     let allArticles = Array.from(articleMap.values());
-    
-    // Sort by date (newest first)
     allArticles.sort((a, b) => {
       const d1 = new Date(a.date).getTime() || 0;
       const d2 = new Date(b.date).getTime() || 0;
       return d2 - d1;
     });
 
-    // Limit to 500 unique articles to keep a deep history
     if (allArticles.length > 500) {
       allArticles = allArticles.slice(0, 500);
     }
@@ -100,12 +97,29 @@ const App: React.FC = () => {
   }, [news]);
 
   const loadNews = useCallback(async (isBackground = false) => {
+    // FIX 1: Check Cool-down Timer
+    const retryUntil = localStorage.getItem(RETRY_KEY);
+    if (retryUntil && Date.now() < parseInt(retryUntil)) {
+      console.log("Cool-down active. Skipping API sync.");
+      setLoading(false);
+      // Ensure we have data loaded
+      const cachedRaw = localStorage.getItem(STORAGE_KEY);
+      if (cachedRaw && !news) {
+        try { setNews(JSON.parse(cachedRaw)); } catch(e) {}
+      }
+      return; 
+    }
+
     try {
       if (!isBackground) setLoading(true);
       setIsRefreshing(true);
       setError(null);
       
       const data = await fetchLatestAINews();
+      
+      // Success! Clear retry timer
+      localStorage.removeItem(RETRY_KEY);
+
       if (data && data.articles && data.articles.length > 0) {
         saveToCache(data);
       } else {
@@ -113,30 +127,38 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       console.error("Sync error:", err.message);
-      // Attempt to load from cache even on error
+
+      // FIX 2: Set Cool-down on 429/Quota errors (1 hour)
+      const isQuota = err.message.includes("Capacity") || err.message.includes("429") || err.message.includes("quota");
+      if (isQuota) {
+         const cooldown = Date.now() + (60 * 60 * 1000); 
+         localStorage.setItem(RETRY_KEY, cooldown.toString());
+      }
+
+      // FIX 3: Suppress error if we have ANY content (Historical or Cached)
       const cachedRaw = localStorage.getItem(STORAGE_KEY);
       
-      // UX Improvement: Only show error if we really have NO data to show.
-      // If we have cached data, just show that and suppress the red alert.
       if (cachedRaw) {
         try {
-          // Refresh the cache view (ensure we are showing latest stored data)
           const cached = JSON.parse(cachedRaw);
-          if (cached.articles.length > HISTORICAL_REPORTS.length) {
-            console.warn("Using cached data due to API failure.");
-            setNews(cached);
+          setNews(cached);
+          
+          // If we have content, DO NOT show the red error box.
+          // Users prefer stale content over a broken site.
+          if (cached.articles.length > 0) {
+            console.warn("Suppressing UI error due to available archive content.");
           } else {
-             // We only have hardcoded history, show error
-             setError(`Sync Alert: ${err.message}. Showing archive.`);
-             saveToCache(null);
+            // Only show error if we have literally nothing
+            setError("Unable to retrieve briefings. Please check back later.");
           }
         } catch (e) {
-          setError(`Sync Alert: ${err.message}. Showing archive.`);
+          setError("Briefing unavailable. Please refresh.");
           saveToCache(null);
         }
       } else {
-         setError(`Sync Alert: ${err.message}. Showing archive.`);
-         saveToCache(null); 
+         // Fallback to historical reports (which saveToCache(null) generates)
+         saveToCache(null);
+         // Even here, we suppress error because saveToCache(null) populates HISTORICAL_REPORTS
       }
     } finally {
       setLoading(false);
@@ -145,7 +167,6 @@ const App: React.FC = () => {
   }, [news, saveToCache]);
 
   useEffect(() => {
-    // FIX: Strict Mode Guard
     if (initialized.current) return;
     initialized.current = true;
 
@@ -160,6 +181,9 @@ const App: React.FC = () => {
         // Refresh every 24 hours
         if (!lastSync || Date.now() - parseInt(lastSync) > 86400000) {
           loadNews(true);
+        } else {
+          // If no sync needed, still check if we missed a background update
+          // or if user manually requests one later.
         }
       } catch (e) {
         loadNews();
@@ -206,7 +230,11 @@ const App: React.FC = () => {
             <ArticleHeader 
               date={news?.lastUpdated || new Date().toLocaleDateString()} 
               isRefreshing={isRefreshing}
-              onRefresh={() => loadNews()}
+              onRefresh={() => {
+                // Allow manual override of cooldown
+                localStorage.removeItem(RETRY_KEY);
+                loadNews();
+              }}
             />
             
             <CategoryMenu 
